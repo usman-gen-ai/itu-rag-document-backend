@@ -1,0 +1,876 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "The AWS CloudFormation template for this Serverless application",
+  "Resources": {
+    "ServerlessDeploymentBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "ServerlessDeploymentBucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "ServerlessDeploymentBucket"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "s3:*",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":s3:::",
+                      {
+                        "Ref": "ServerlessDeploymentBucket"
+                      },
+                      "/*"
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":s3:::",
+                      {
+                        "Ref": "ServerlessDeploymentBucket"
+                      }
+                    ]
+                  ]
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": false
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "ApiLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/aws/lambda/poocho-ai-backend-dev-api"
+      }
+    },
+    "SyncWorkerLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": "/aws/lambda/poocho-ai-backend-dev-syncWorker"
+      }
+    },
+    "ApiLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ServerlessDeploymentBucket"
+          },
+          "S3Key": "serverless/poocho-ai-backend/dev/1794856010461-2026-11-16T19:06:50.461Z/poocho-ai-backend.zip"
+        },
+        "Handler": "src/handler.handler",
+        "Runtime": "nodejs22.x",
+        "FunctionName": "poocho-ai-backend-dev-api",
+        "MemorySize": 512,
+        "Timeout": 870,
+        "Architectures": [
+          "arm64"
+        ],
+        "Environment": {
+          "Variables": {
+            "FRONTEND_ORIGIN": "*",
+            "KNOWLEDGE_BASE_ID": {
+              "Ref": "KnowledgeBase"
+            },
+            "DATA_SOURCE_ID": {
+              "Fn::GetAtt": [
+                "DataSource",
+                "DataSourceId"
+              ]
+            },
+            "SOURCE_BUCKET_NAME": {
+              "Ref": "SourceBucket"
+            },
+            "SQS_QUEUE_URL": {
+              "Ref": "SyncQueue"
+            },
+            "CHAT_MODEL_ID": "amazon.nova-pro-v1:0",
+            "NUMBER_OF_RESULTS": "15",
+            "STRICT_RAG": "true"
+          }
+        },
+        "Role": {
+          "Fn::GetAtt": [
+            "ApiLambdaRole",
+            "Arn"
+          ]
+        }
+      },
+      "DependsOn": [
+        "ApiLogGroup",
+        "ApiLambdaRole"
+      ]
+    },
+    "SyncWorkerLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ServerlessDeploymentBucket"
+          },
+          "S3Key": "serverless/poocho-ai-backend/dev/1794856010461-2026-11-16T19:06:50.461Z/poocho-ai-backend.zip"
+        },
+        "Handler": "src/syncWorker.handler",
+        "Runtime": "nodejs22.x",
+        "FunctionName": "poocho-ai-backend-dev-syncWorker",
+        "MemorySize": 512,
+        "Timeout": 30,
+        "Architectures": [
+          "arm64"
+        ],
+        "Environment": {
+          "Variables": {
+            "FRONTEND_ORIGIN": "*",
+            "KNOWLEDGE_BASE_ID": {
+              "Ref": "KnowledgeBase"
+            },
+            "DATA_SOURCE_ID": {
+              "Fn::GetAtt": [
+                "DataSource",
+                "DataSourceId"
+              ]
+            },
+            "SOURCE_BUCKET_NAME": {
+              "Ref": "SourceBucket"
+            },
+            "SQS_QUEUE_URL": {
+              "Ref": "SyncQueue"
+            },
+            "CHAT_MODEL_ID": "amazon.nova-pro-v1:0",
+            "NUMBER_OF_RESULTS": "15",
+            "STRICT_RAG": "true"
+          }
+        },
+        "Role": {
+          "Fn::GetAtt": [
+            "SyncLambdaRole",
+            "Arn"
+          ]
+        }
+      },
+      "DependsOn": [
+        "SyncWorkerLogGroup",
+        "SyncLambdaRole"
+      ]
+    },
+    "ApiLambdaVersionC2ljqFnbUDND5R46htQT2hINqHzlTUZunHe6n7bVlY": {
+      "Type": "AWS::Lambda::Version",
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "ApiLambdaFunction"
+        },
+        "CodeSha256": "WfOYJrKm/rRsR70XUdHE72QTNaoPHr4j45cwZKvCoDI="
+      }
+    },
+    "SyncWorkerLambdaVersionONq5T0uWHxOz9z1fh1xsbD4w2wycIZtdij9EoU5E": {
+      "Type": "AWS::Lambda::Version",
+      "DeletionPolicy": "Retain",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "SyncWorkerLambdaFunction"
+        },
+        "CodeSha256": "WfOYJrKm/rRsR70XUdHE72QTNaoPHr4j45cwZKvCoDI="
+      }
+    },
+    "SyncWorkerEventSourceMappingSQSSyncQueue": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "DependsOn": [
+        "SyncLambdaRole"
+      ],
+      "Properties": {
+        "BatchSize": 10,
+        "MaximumBatchingWindowInSeconds": 20,
+        "EventSourceArn": {
+          "Fn::GetAtt": [
+            "SyncQueue",
+            "Arn"
+          ]
+        },
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "SyncWorkerLambdaFunction",
+            "Arn"
+          ]
+        },
+        "Enabled": true,
+        "FunctionResponseTypes": [
+          "ReportBatchItemFailures"
+        ],
+        "ScalingConfig": {
+          "MaximumConcurrency": 2
+        }
+      }
+    },
+    "SourceBucket": {
+      "Type": "AWS::S3::Bucket",
+      "DependsOn": [
+        "SyncQueuePolicy"
+      ],
+      "Properties": {
+        "BucketName": "poocho-ai-dev-source-634003055246",
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "CorsConfiguration": {
+          "CorsRules": [
+            {
+              "AllowedOrigins": {
+                "Fn::Split": [
+                  ",",
+                  "*"
+                ]
+              },
+              "AllowedMethods": [
+                "PUT",
+                "GET",
+                "HEAD"
+              ],
+              "AllowedHeaders": [
+                "*"
+              ],
+              "ExposedHeaders": [
+                "ETag"
+              ],
+              "MaxAge": 3000
+            }
+          ]
+        },
+        "NotificationConfiguration": {
+          "QueueConfigurations": [
+            {
+              "Event": "s3:ObjectCreated:*",
+              "Queue": {
+                "Fn::GetAtt": [
+                  "SyncQueue",
+                  "Arn"
+                ]
+              },
+              "Filter": {
+                "S3Key": {
+                  "Rules": [
+                    {
+                      "Name": "prefix",
+                      "Value": "uploads/"
+                    },
+                    {
+                      "Name": "suffix",
+                      "Value": ".pdf"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "Event": "s3:ObjectCreated:*",
+              "Queue": {
+                "Fn::GetAtt": [
+                  "SyncQueue",
+                  "Arn"
+                ]
+              },
+              "Filter": {
+                "S3Key": {
+                  "Rules": [
+                    {
+                      "Name": "prefix",
+                      "Value": "uploads/"
+                    },
+                    {
+                      "Name": "suffix",
+                      "Value": ".docx"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "Event": "s3:ObjectCreated:*",
+              "Queue": {
+                "Fn::GetAtt": [
+                  "SyncQueue",
+                  "Arn"
+                ]
+              },
+              "Filter": {
+                "S3Key": {
+                  "Rules": [
+                    {
+                      "Name": "prefix",
+                      "Value": "uploads/"
+                    },
+                    {
+                      "Name": "suffix",
+                      "Value": ".txt"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "SyncDLQ": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": "poocho-ai-dev-sync-dlq",
+        "MessageRetentionPeriod": 1209600
+      }
+    },
+    "SyncQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": "poocho-ai-dev-sync",
+        "VisibilityTimeout": 180,
+        "MessageRetentionPeriod": 345600,
+        "RedrivePolicy": {
+          "deadLetterTargetArn": {
+            "Fn::GetAtt": [
+              "SyncDLQ",
+              "Arn"
+            ]
+          },
+          "maxReceiveCount": 15
+        }
+      }
+    },
+    "SyncQueuePolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "Queues": [
+          {
+            "Ref": "SyncQueue"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowS3SendMessage",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "s3.amazonaws.com"
+              },
+              "Action": "sqs:SendMessage",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "SyncQueue",
+                  "Arn"
+                ]
+              },
+              "Condition": {
+                "ArnLike": {
+                  "aws:SourceArn": "arn:aws:s3:::poocho-ai-dev-source-634003055246"
+                },
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "VectorBucket": {
+      "Type": "AWS::S3Vectors::VectorBucket",
+      "Properties": {
+        "VectorBucketName": "poocho-ai-dev-vectors-634003055246"
+      }
+    },
+    "VectorIndex": {
+      "Type": "AWS::S3Vectors::Index",
+      "DependsOn": [
+        "VectorBucket"
+      ],
+      "Properties": {
+        "VectorBucketName": "poocho-ai-dev-vectors-634003055246",
+        "IndexName": "poocho-ai-index",
+        "DataType": "float32",
+        "Dimension": 1024,
+        "DistanceMetric": "cosine",
+        "MetadataConfiguration": {
+          "NonFilterableMetadataKeys": [
+            "AMAZON_BEDROCK_TEXT",
+            "AMAZON_BEDROCK_METADATA"
+          ]
+        }
+      }
+    },
+    "KnowledgeBaseRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "poocho-ai-dev-kb-role",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "bedrock.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "kb-access",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "EmbeddingModel",
+                  "Effect": "Allow",
+                  "Action": "bedrock:InvokeModel",
+                  "Resource": "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
+                },
+                {
+                  "Sid": "ReadSourceBucket",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:ListBucket"
+                  ],
+                  "Resource": [
+                    "arn:aws:s3:::poocho-ai-dev-source-634003055246",
+                    "arn:aws:s3:::poocho-ai-dev-source-634003055246/*"
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "aws:ResourceAccount": {
+                        "Ref": "AWS::AccountId"
+                      }
+                    }
+                  }
+                },
+                {
+                  "Sid": "VectorStore",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3vectors:GetIndex",
+                    "s3vectors:QueryVectors",
+                    "s3vectors:PutVectors",
+                    "s3vectors:GetVectors",
+                    "s3vectors:DeleteVectors",
+                    "s3vectors:ListVectors"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "VectorIndex",
+                      "IndexArn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "KnowledgeBase": {
+      "Type": "AWS::Bedrock::KnowledgeBase",
+      "DependsOn": [
+        "KnowledgeBaseRole",
+        "VectorIndex"
+      ],
+      "Properties": {
+        "Name": "poocho-ai-dev-kb",
+        "Description": "Per-student study documents for Poocho AI",
+        "RoleArn": {
+          "Fn::GetAtt": [
+            "KnowledgeBaseRole",
+            "Arn"
+          ]
+        },
+        "KnowledgeBaseConfiguration": {
+          "Type": "VECTOR",
+          "VectorKnowledgeBaseConfiguration": {
+            "EmbeddingModelArn": "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0",
+            "EmbeddingModelConfiguration": {
+              "BedrockEmbeddingModelConfiguration": {
+                "Dimensions": 1024,
+                "EmbeddingDataType": "FLOAT32"
+              }
+            }
+          }
+        },
+        "StorageConfiguration": {
+          "Type": "S3_VECTORS",
+          "S3VectorsConfiguration": {
+            "IndexArn": {
+              "Fn::GetAtt": [
+                "VectorIndex",
+                "IndexArn"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "DataSource": {
+      "Type": "AWS::Bedrock::DataSource",
+      "Properties": {
+        "Name": "poocho-ai-dev-s3-source",
+        "KnowledgeBaseId": {
+          "Ref": "KnowledgeBase"
+        },
+        "DataDeletionPolicy": "DELETE",
+        "DataSourceConfiguration": {
+          "Type": "S3",
+          "S3Configuration": {
+            "BucketArn": {
+              "Fn::GetAtt": [
+                "SourceBucket",
+                "Arn"
+              ]
+            },
+            "InclusionPrefixes": [
+              "uploads/"
+            ]
+          }
+        },
+        "VectorIngestionConfiguration": {
+          "ChunkingConfiguration": {
+            "ChunkingStrategy": "FIXED_SIZE",
+            "FixedSizeChunkingConfiguration": {
+              "MaxTokens": 300,
+              "OverlapPercentage": 20
+            }
+          }
+        }
+      }
+    },
+    "ApiFunctionUrl": {
+      "Type": "AWS::Lambda::Url",
+      "Properties": {
+        "TargetFunctionArn": {
+          "Fn::GetAtt": [
+            "ApiLambdaFunction",
+            "Arn"
+          ]
+        },
+        "AuthType": "NONE",
+        "InvokeMode": "BUFFERED"
+      }
+    },
+    "ApiFunctionUrlPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "ApiLambdaFunction"
+        },
+        "Action": "lambda:InvokeFunctionUrl",
+        "Principal": "*",
+        "FunctionUrlAuthType": "NONE"
+      }
+    },
+    "ApiFunctionInvokePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "ApiLambdaFunction"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "*",
+        "InvokedViaFunctionUrl": true
+      }
+    },
+    "ApiLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "poocho-ai-dev-api-role",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "api-access",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Documents",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:PutObject",
+                    "s3:GetObject",
+                    "s3:DeleteObject"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${SourceBucket.Arn}/uploads/*"
+                  }
+                },
+                {
+                  "Sid": "ListDocuments",
+                  "Effect": "Allow",
+                  "Action": "s3:ListBucket",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "SourceBucket",
+                      "Arn"
+                    ]
+                  },
+                  "Condition": {
+                    "StringLike": {
+                      "s3:prefix": [
+                        "uploads/*"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "Sid": "RagQuery",
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:Retrieve",
+                    "bedrock:RetrieveAndGenerate"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "KnowledgeBase",
+                      "KnowledgeBaseArn"
+                    ]
+                  }
+                },
+                {
+                  "Sid": "DocumentStatus",
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:StartIngestionJob",
+                    "bedrock:GetKnowledgeBaseDocuments",
+                    "bedrock:ListKnowledgeBaseDocuments",
+                    "bedrock:ListIngestionJobs",
+                    "bedrock:GetIngestionJob"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "KnowledgeBase",
+                      "KnowledgeBaseArn"
+                    ]
+                  }
+                },
+                {
+                  "Sid": "GenerationModel",
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:InvokeModel",
+                    "bedrock:GetInferenceProfile"
+                  ],
+                  "Resource": [
+                    "arn:aws:bedrock:*::foundation-model/*",
+                    {
+                      "Fn::Sub": "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "SyncLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "poocho-ai-dev-sync-role",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "sync-access",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "Ingestion",
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:StartIngestionJob",
+                    "bedrock:GetIngestionJob",
+                    "bedrock:ListIngestionJobs"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "KnowledgeBase",
+                      "KnowledgeBaseArn"
+                    ]
+                  }
+                },
+                {
+                  "Sid": "Queue",
+                  "Effect": "Allow",
+                  "Action": [
+                    "sqs:ReceiveMessage",
+                    "sqs:DeleteMessage",
+                    "sqs:GetQueueAttributes",
+                    "sqs:ChangeMessageVisibility"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "SyncQueue",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "ServerlessDeploymentBucketName": {
+      "Value": {
+        "Ref": "ServerlessDeploymentBucket"
+      },
+      "Export": {
+        "Name": "sls-poocho-ai-backend-dev-ServerlessDeploymentBucketName"
+      }
+    },
+    "ApiLambdaFunctionQualifiedArn": {
+      "Description": "Current Lambda function version",
+      "Value": {
+        "Ref": "ApiLambdaVersionC2ljqFnbUDND5R46htQT2hINqHzlTUZunHe6n7bVlY"
+      },
+      "Export": {
+        "Name": "sls-poocho-ai-backend-dev-ApiLambdaFunctionQualifiedArn"
+      }
+    },
+    "SyncWorkerLambdaFunctionQualifiedArn": {
+      "Description": "Current Lambda function version",
+      "Value": {
+        "Ref": "SyncWorkerLambdaVersionONq5T0uWHxOz9z1fh1xsbD4w2wycIZtdij9EoU5E"
+      },
+      "Export": {
+        "Name": "sls-poocho-ai-backend-dev-SyncWorkerLambdaFunctionQualifiedArn"
+      }
+    },
+    "ApiBaseUrl": {
+      "Description": "Public Lambda Function URL (use as frontend API base, no trailing slash)",
+      "Value": {
+        "Fn::GetAtt": [
+          "ApiFunctionUrl",
+          "FunctionUrl"
+        ]
+      }
+    },
+    "KnowledgeBaseId": {
+      "Value": {
+        "Ref": "KnowledgeBase"
+      }
+    },
+    "DataSourceId": {
+      "Value": {
+        "Fn::GetAtt": [
+          "DataSource",
+          "DataSourceId"
+        ]
+      }
+    },
+    "SourceBucketName": {
+      "Value": {
+        "Ref": "SourceBucket"
+      }
+    },
+    "SyncQueueUrl": {
+      "Value": {
+        "Ref": "SyncQueue"
+      }
+    },
+    "VectorIndexArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "VectorIndex",
+          "IndexArn"
+        ]
+      }
+    }
+  }
+}

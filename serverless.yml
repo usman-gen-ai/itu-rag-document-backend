@@ -1,0 +1,367 @@
+service: poocho-ai-backend
+frameworkVersion: "3"
+configValidationMode: off # Serverless v3 does not list nodejs22.x yet; Lambda supports it
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  architecture: arm64
+  region: ${env:AWS_REGION, 'us-east-1'}
+  stage: ${opt:stage, env:STAGE, 'dev'}
+  memorySize: 512
+  timeout: 30
+  environment:
+    FRONTEND_ORIGIN: ${self:custom.frontendOrigins}
+    KNOWLEDGE_BASE_ID: !Ref KnowledgeBase
+    DATA_SOURCE_ID: !GetAtt DataSource.DataSourceId
+    SOURCE_BUCKET_NAME: !Ref SourceBucket
+    SQS_QUEUE_URL: !Ref SyncQueue
+    CHAT_MODEL_ID: ${env:CHAT_MODEL_ID, self:custom.defaultChatModel}
+    NUMBER_OF_RESULTS: ${env:NUMBER_OF_RESULTS, '15'}
+    STRICT_RAG: ${env:STRICT_RAG, 'true'} # false = demo mode without the zero-hallucination checks
+
+package:
+  patterns:
+    - "!.env*"
+    - "!README.md"
+    - "!*.zip"
+
+custom:
+  defaultChatModel: arn:aws:bedrock:${self:provider.region}:${aws:accountId}:inference-profile/apac.amazon.nova-micro-v1:0
+  frontendOrigins: ${env:FRONTEND_ORIGIN, '*'} # comma-separated, no spaces
+  sourceBucketName: poocho-ai-${self:provider.stage}-source-${aws:accountId}
+  vectorBucketName: poocho-ai-${self:provider.stage}-vectors-${aws:accountId}
+  vectorIndexName: poocho-ai-index
+  embeddingModelArn: arn:aws:bedrock:${self:provider.region}::foundation-model/amazon.titan-embed-text-v2:0
+
+functions:
+  api:
+    handler: src/handler.handler
+    role: !GetAtt ApiLambdaRole.Arn
+    timeout: 870 # 14 min 30 s (Lambda max is 15 min)
+    # No API Gateway: the public Lambda Function URL is created in `resources` below.
+
+  syncWorker:
+    handler: src/syncWorker.handler
+    role: !GetAtt SyncLambdaRole.Arn
+    timeout: 30
+    events:
+      - sqs:
+          arn: !GetAtt SyncQueue.Arn
+          batchSize: 10
+          maximumBatchingWindow: 20
+          maximumConcurrency: 2
+          functionResponseType: ReportBatchItemFailures
+
+resources:
+  Resources:
+    # ------------------------------------------------------------------ S3 source bucket
+    SourceBucket:
+      Type: AWS::S3::Bucket
+      DependsOn: SyncQueuePolicy
+      Properties:
+        BucketName: ${self:custom.sourceBucketName}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                Fn::Split: [",", "${self:custom.frontendOrigins}"]
+              AllowedMethods: [PUT, GET, HEAD]
+              AllowedHeaders: ["*"]
+              ExposedHeaders: [ETag]
+              MaxAge: 3000
+        # S3 allows only one prefix/suffix per rule, so one rule per supported extension.
+        # *.metadata.json never matches, so metadata companions don't trigger ingestion.
+        NotificationConfiguration:
+          QueueConfigurations:
+            - Event: s3:ObjectCreated:*
+              Queue: !GetAtt SyncQueue.Arn
+              Filter:
+                S3Key:
+                  Rules:
+                    - { Name: prefix, Value: uploads/ }
+                    - { Name: suffix, Value: .pdf }
+            - Event: s3:ObjectCreated:*
+              Queue: !GetAtt SyncQueue.Arn
+              Filter:
+                S3Key:
+                  Rules:
+                    - { Name: prefix, Value: uploads/ }
+                    - { Name: suffix, Value: .docx }
+            - Event: s3:ObjectCreated:*
+              Queue: !GetAtt SyncQueue.Arn
+              Filter:
+                S3Key:
+                  Rules:
+                    - { Name: prefix, Value: uploads/ }
+                    - { Name: suffix, Value: .txt }
+
+    # ------------------------------------------------------------------ SQS (buffer for upload events)
+    SyncDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: poocho-ai-${self:provider.stage}-sync-dlq
+        MessageRetentionPeriod: 1209600
+
+    SyncQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: poocho-ai-${self:provider.stage}-sync
+        VisibilityTimeout: 180 # >= 6x the syncWorker timeout (30s)
+        MessageRetentionPeriod: 345600
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt SyncDLQ.Arn
+          maxReceiveCount: 15
+
+    SyncQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues: [!Ref SyncQueue]
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: AllowS3SendMessage
+              Effect: Allow
+              Principal: { Service: s3.amazonaws.com }
+              Action: sqs:SendMessage
+              Resource: !GetAtt SyncQueue.Arn
+              Condition:
+                ArnLike:
+                  aws:SourceArn: arn:aws:s3:::${self:custom.sourceBucketName}
+                StringEquals:
+                  aws:SourceAccount: !Ref AWS::AccountId
+
+    # ------------------------------------------------------------------ S3 Vectors
+    VectorBucket:
+      Type: AWS::S3Vectors::VectorBucket
+      Properties:
+        VectorBucketName: ${self:custom.vectorBucketName}
+
+    VectorIndex:
+      Type: AWS::S3Vectors::Index
+      DependsOn: VectorBucket
+      Properties:
+        VectorBucketName: ${self:custom.vectorBucketName}
+        IndexName: ${self:custom.vectorIndexName}
+        DataType: float32
+        Dimension: 1024 # Titan Text Embeddings v2
+        DistanceMetric: cosine
+        MetadataConfiguration:
+          NonFilterableMetadataKeys: # required by Bedrock KB (chunk text is large)
+            - AMAZON_BEDROCK_TEXT
+            - AMAZON_BEDROCK_METADATA
+
+    # ------------------------------------------------------------------ Bedrock Knowledge Base
+    KnowledgeBaseRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: poocho-ai-${self:provider.stage}-kb-role
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: bedrock.amazonaws.com }
+              Action: sts:AssumeRole
+              Condition:
+                StringEquals:
+                  aws:SourceAccount: !Ref AWS::AccountId
+                ArnLike:
+                  aws:SourceArn: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*
+        Policies:
+          - PolicyName: kb-access
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: EmbeddingModel
+                  Effect: Allow
+                  Action: bedrock:InvokeModel
+                  Resource: ${self:custom.embeddingModelArn}
+                - Sid: ReadSourceBucket
+                  Effect: Allow
+                  Action: [s3:GetObject, s3:ListBucket]
+                  Resource:
+                    - arn:aws:s3:::${self:custom.sourceBucketName}
+                    - arn:aws:s3:::${self:custom.sourceBucketName}/*
+                  Condition:
+                    StringEquals:
+                      aws:ResourceAccount: !Ref AWS::AccountId
+                - Sid: VectorStore
+                  Effect: Allow
+                  Action:
+                    - s3vectors:GetIndex
+                    - s3vectors:QueryVectors
+                    - s3vectors:PutVectors
+                    - s3vectors:GetVectors
+                    - s3vectors:DeleteVectors
+                    - s3vectors:ListVectors
+                  Resource: !GetAtt VectorIndex.IndexArn
+
+    KnowledgeBase:
+      Type: AWS::Bedrock::KnowledgeBase
+      DependsOn: [KnowledgeBaseRole, VectorIndex]
+      Properties:
+        Name: poocho-ai-${self:provider.stage}-kb
+        Description: Per-student study documents for Poocho AI
+        RoleArn: !GetAtt KnowledgeBaseRole.Arn
+        KnowledgeBaseConfiguration:
+          Type: VECTOR
+          VectorKnowledgeBaseConfiguration:
+            EmbeddingModelArn: ${self:custom.embeddingModelArn}
+            EmbeddingModelConfiguration:
+              BedrockEmbeddingModelConfiguration:
+                Dimensions: 1024
+                EmbeddingDataType: FLOAT32
+        StorageConfiguration:
+          Type: S3_VECTORS
+          S3VectorsConfiguration:
+            IndexArn: !GetAtt VectorIndex.IndexArn
+
+    DataSource:
+      Type: AWS::Bedrock::DataSource
+      Properties:
+        Name: poocho-ai-${self:provider.stage}-s3-source
+        KnowledgeBaseId: !Ref KnowledgeBase
+        DataDeletionPolicy: DELETE
+        DataSourceConfiguration:
+          Type: S3
+          S3Configuration:
+            BucketArn: !GetAtt SourceBucket.Arn
+            InclusionPrefixes: [uploads/]
+        VectorIngestionConfiguration:
+          ChunkingConfiguration:
+            ChunkingStrategy: FIXED_SIZE
+            FixedSizeChunkingConfiguration:
+              MaxTokens: 300
+              OverlapPercentage: 20
+
+    # ------------------------------------------------------------------ Public Lambda Function URL (replaces API Gateway)
+    # CORS is handled inside the app (src/lib/cors.js), so no Cors block here (avoids duplicate headers).
+    ApiFunctionUrl:
+      Type: AWS::Lambda::Url
+      Properties:
+        TargetFunctionArn: !GetAtt ApiLambdaFunction.Arn
+        AuthType: NONE
+        InvokeMode: BUFFERED
+
+    # Public access to a Function URL needs BOTH permissions (required for URLs created since Oct 2025).
+    ApiFunctionUrlPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref ApiLambdaFunction
+        Action: lambda:InvokeFunctionUrl
+        Principal: "*"
+        FunctionUrlAuthType: NONE
+
+    ApiFunctionInvokePermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref ApiLambdaFunction
+        Action: lambda:InvokeFunction
+        Principal: "*"
+        InvokedViaFunctionUrl: true
+
+    # ------------------------------------------------------------------ Lambda roles (least privilege, one per function)
+    ApiLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: poocho-ai-${self:provider.stage}-api-role
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: lambda.amazonaws.com }
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        Policies:
+          - PolicyName: api-access
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: Documents
+                  Effect: Allow
+                  Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+                  Resource: !Sub ${SourceBucket.Arn}/uploads/*
+                - Sid: ListDocuments
+                  Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !GetAtt SourceBucket.Arn
+                  Condition:
+                    StringLike:
+                      s3:prefix: ["uploads/*"]
+                - Sid: RagQuery
+                  Effect: Allow
+                  Action: [bedrock:Retrieve, bedrock:RetrieveAndGenerate]
+                  Resource: !GetAtt KnowledgeBase.KnowledgeBaseArn
+                - Sid: DocumentStatus
+                  Effect: Allow
+                  Action:
+                    - bedrock:StartIngestionJob
+                    - bedrock:GetKnowledgeBaseDocuments
+                    - bedrock:ListKnowledgeBaseDocuments
+                    - bedrock:ListIngestionJobs
+                    - bedrock:GetIngestionJob
+                  Resource: !GetAtt KnowledgeBase.KnowledgeBaseArn
+                - Sid: GenerationModel
+                  Effect: Allow
+                  Action: [bedrock:InvokeModel, bedrock:GetInferenceProfile]
+                  Resource:
+                    - arn:aws:bedrock:*::foundation-model/*
+                    - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*
+
+    SyncLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: poocho-ai-${self:provider.stage}-sync-role
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: lambda.amazonaws.com }
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        Policies:
+          - PolicyName: sync-access
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: Ingestion
+                  Effect: Allow
+                  Action:
+                    - bedrock:StartIngestionJob
+                    - bedrock:GetIngestionJob
+                    - bedrock:ListIngestionJobs
+                  Resource: !GetAtt KnowledgeBase.KnowledgeBaseArn
+                - Sid: Queue
+                  Effect: Allow
+                  Action:
+                    - sqs:ReceiveMessage
+                    - sqs:DeleteMessage
+                    - sqs:GetQueueAttributes
+                    - sqs:ChangeMessageVisibility
+                  Resource: !GetAtt SyncQueue.Arn
+
+  Outputs:
+    ApiBaseUrl:
+      Description: Public Lambda Function URL (use as frontend API base, no trailing slash)
+      Value: !GetAtt ApiFunctionUrl.FunctionUrl
+    KnowledgeBaseId:
+      Value: !Ref KnowledgeBase
+    DataSourceId:
+      Value: !GetAtt DataSource.DataSourceId
+    SourceBucketName:
+      Value: !Ref SourceBucket
+    SyncQueueUrl:
+      Value: !Ref SyncQueue
+    VectorIndexArn:
+      Value: !GetAtt VectorIndex.IndexArn
